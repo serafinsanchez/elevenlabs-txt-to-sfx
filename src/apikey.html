@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ElevenLabs API Key</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    *:not(dialog) { margin: 0; }
+    input, button { font: inherit; }
+
+    :root {
+      --bg-0: #07090d;
+      --bg-1: #0d1118;
+      --amber: hsl(34, 100%, 64%);
+      --gold: hsl(45, 100%, 72%);
+      --text: hsla(0, 0%, 100%, 0.92);
+      --text-dim: hsla(0, 0%, 100%, 0.45);
+      --input-bg: hsla(210, 40%, 6%, 0.6);
+      --input-brd: hsla(38, 60%, 60%, 0.18);
+    }
+    html, body { height: 100%; }
+    html {
+      background: var(--bg-0);
+      color: var(--text);
+      font-family: "AbletonSansSmall", -apple-system, "Inter", "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    body { overflow: hidden; }
+
+    .wrap {
+      position: relative; width: 100vw; height: 100vh; padding: 22px 22px 18px;
+      display: flex; flex-direction: column;
+      background: radial-gradient(120% 90% at 50% -10%, var(--bg-1) 0%, var(--bg-0) 70%);
+    }
+    h1 { font-size: 14px; font-weight: 600; letter-spacing: .2px; display: flex; align-items: center; gap: 8px; }
+    .spark { width: 14px; height: 14px; filter: drop-shadow(0 0 6px hsla(38,100%,60%,0.7)); }
+    p.lead { margin-top: 10px; font-size: 12px; line-height: 1.5; color: var(--text-dim); }
+    a { color: var(--gold); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .field { margin-top: 16px; }
+    .field input {
+      width: 100%; height: 34px; background: var(--input-bg); border: 1px solid var(--input-brd);
+      border-radius: 9px; color: var(--text); font-size: 13px; padding: 0 12px; outline: none; letter-spacing: .5px;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .field input::placeholder { color: var(--text-dim); letter-spacing: 0; }
+    .field input:focus { border-color: hsla(38,100%,67%,0.55); box-shadow: 0 0 0 3px hsla(38,100%,67%,0.12); }
+
+    .note { margin-top: 10px; font-size: 11px; color: hsl(34, 90%, 66%); min-height: 14px; }
+
+    .row { margin-top: auto; display: flex; justify-content: flex-end; gap: 8px; padding-top: 16px; }
+    .btn { height: 32px; padding: 0 16px; border-radius: 9px; font-size: 12px; font-weight: 600; border: none; cursor: pointer; color: var(--text); }
+    .btn.ghost { background: hsla(210,30%,40%,0.16); color: var(--text-dim); }
+    .btn.ghost:hover { color: var(--text); }
+    .btn.go { color: #1a0f00; background: linear-gradient(135deg, var(--amber), var(--gold)); }
+    .btn.go:disabled { opacity: .4; cursor: not-allowed; }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <h1>
+      <svg class="spark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2l2.2 6.4L20.6 11l-6.4 2.2L12 20l-2.2-6.8L3.4 11l6.4-2.6L12 2z" fill="hsl(38,100%,64%)" />
+      </svg>
+      ElevenLabs API key
+    </h1>
+    <p class="lead">
+      Paste your ElevenLabs API key to generate sound effects. It's stored locally on this machine
+      and only ever sent to ElevenLabs. Get one at
+      <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener">elevenlabs.io → API Keys</a>.
+    </p>
+    <div class="field">
+      <input id="apikey" type="password" placeholder="sk_…" autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="note">Required before your first generation.</div>
+    <div class="row">
+      <button class="btn ghost" id="cancel" type="button">Cancel</button>
+      <button class="btn go" id="save" type="button">Save</button>
+    </div>
+  </div>
+
+  <script>
+    /* ---- Host bridge (same contract as the SFX modal) ---- */
+    const isWebKit = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.live;
+    const isWebView2 = window.chrome && window.chrome.webview;
+    function doSendMessage(message) {
+      if (isWebKit) window.webkit.messageHandlers.live.postMessage(message);
+      else if (isWebView2) window.chrome.webview.postMessage(message);
+    }
+    let closed = false;
+    function closeWithResult(result) {
+      if (closed) return;
+      closed = true;
+      doSendMessage({ method: "close_and_send", params: [JSON.stringify(result)] });
+    }
+
+    const keyEl = document.getElementById("apikey");
+    const saveBtn = document.getElementById("save");
+    const cancelBtn = document.getElementById("cancel");
+
+    function syncEnabled() { saveBtn.disabled = keyEl.value.trim().length === 0; }
+    function save() {
+      if (saveBtn.disabled) return;
+      closeWithResult({ apiKey: keyEl.value.trim() });
+    }
+    function cancel() { closeWithResult({ apiKey: null }); }
+
+    keyEl.addEventListener("input", syncEnabled);
+    saveBtn.addEventListener("click", save);
+    cancelBtn.addEventListener("click", cancel);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") save();
+      if (e.key === "Escape") cancel();
+    });
+    document.addEventListener("DOMContentLoaded", () => { syncEnabled(); keyEl.focus(); });
+  </script>
+</body>
+
+</html>

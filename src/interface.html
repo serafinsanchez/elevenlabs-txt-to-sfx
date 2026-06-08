@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Generate SFX</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    *:not(dialog) { margin: 0; }
+    input, button { font: inherit; }
+
+    :root {
+      --bg-0: #04050a;
+      --bg-1: #0b1018;
+      --amber: hsl(34, 100%, 64%);
+      --gold: hsl(45, 100%, 72%);
+      --text: hsla(0, 0%, 100%, 0.92);
+      --text-dim: hsla(0, 0%, 100%, 0.42);
+    }
+    html, body { height: 100%; }
+    html {
+      background: var(--bg-0);
+      color: var(--text);
+      font-family: "AbletonSansSmall", -apple-system, "Inter", "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    body { overflow: hidden; }
+
+    .modal {
+      position: relative; width: 100vw; height: 100vh; overflow: hidden;
+      background: radial-gradient(120% 100% at 50% 42%, var(--bg-1) 0%, #06080d 60%, var(--bg-0) 100%);
+      isolation: isolate;
+    }
+    #stage { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 1; }
+
+    /* borderless prompt */
+    .prompt { position: absolute; top: 26px; left: 50%; transform: translateX(-50%); z-index: 5; width: 78%; text-align: center; }
+    .prompt input {
+      width: 100%; background: transparent; border: none; outline: none; text-align: center;
+      color: #fff; font-size: 15px; letter-spacing: .2px; caret-color: var(--gold);
+      text-shadow: 0 0 16px hsla(38, 100%, 60%, .55);
+    }
+    .prompt input::placeholder { color: var(--text-dim); text-shadow: none; }
+    .hairline {
+      height: 1px; margin: 8px auto 0; width: 0%; transition: width .25s;
+      background: linear-gradient(90deg, transparent, var(--amber), transparent); box-shadow: 0 0 10px var(--amber);
+    }
+
+    /* soft radial scrim: calms the bright core so the readout stays legible */
+    .scrim {
+      position: absolute; left: 50%; top: 48%; transform: translate(-50%, -50%);
+      z-index: 4; pointer-events: none; width: 220px; height: 150px;
+      background: radial-gradient(ellipse at center,
+        rgba(4,5,10,0.86) 0%, rgba(4,5,10,0.62) 34%, rgba(4,5,10,0) 70%);
+    }
+
+    /* center duration readout, over the core */
+    .readout { position: absolute; left: 50%; top: 48%; transform: translate(-50%, -50%); z-index: 6; text-align: center; pointer-events: none; }
+    .readout .num { font-size: 28px; font-weight: 400; letter-spacing: .5px; color: #fff; font-variant-numeric: tabular-nums;
+      text-shadow: 0 0 22px hsla(38,100%,60%,.55), 0 1px 10px rgba(0,0,0,.95); }
+    .readout .num small { font-size: 15px; opacity: .85; }
+    .readout .lbl { font-size: 9px; letter-spacing: 2.5px; text-transform: uppercase; color: var(--text); opacity: .7; margin-top: 3px; text-shadow: 0 1px 6px rgba(0,0,0,.9); }
+
+    /* generate + cancel */
+    .go {
+      position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 6;
+      height: 32px; padding: 0 22px; border-radius: 999px; border: none; cursor: pointer;
+      font-size: 12px; font-weight: 600; color: #1a0f00;
+      background: linear-gradient(135deg, var(--amber), var(--gold));
+      box-shadow: 0 8px 24px -8px hsla(38,100%,60%,.8);
+    }
+    .go:disabled { opacity: .4; cursor: not-allowed; box-shadow: none; }
+    .x {
+      position: absolute; top: 10px; right: 12px; z-index: 6; width: 24px; height: 24px;
+      border: none; border-radius: 50%; cursor: pointer; color: var(--text-dim);
+      background: hsla(210,30%,40%,0.14); font-size: 14px; line-height: 1;
+    }
+    .x:hover { color: var(--text); }
+
+    /* visually hidden but focusable: source of truth for duration (a11y + contract) */
+    .vh-range { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; left: 50%; bottom: 0; }
+
+    @media (prefers-reduced-motion: reduce) { .hairline { transition: none; } }
+  </style>
+</head>
+
+<body>
+  <div class="modal">
+    <canvas id="stage"></canvas>
+    <div class="scrim"></div>
+
+    <button class="x" id="cancel-x" type="button" aria-label="Cancel">✕</button>
+
+    <div class="prompt">
+      <input id="prompt" type="text" placeholder="deep sub impact with metallic tail…" />
+      <div class="hairline" id="hair"></div>
+    </div>
+
+    <div class="readout">
+      <div class="num" id="duration-value">2.0<small>s</small></div>
+      <div class="lbl">duration</div>
+    </div>
+
+    <input class="vh-range" type="range" id="duration" min="0.5" max="30" step="0.5" value="2" aria-label="Duration in seconds" />
+
+    <button class="go" id="generate" type="button">Generate</button>
+  </div>
+
+  <script>
+    /* ---- Host bridge (unchanged contract) ---- */
+    const isWebKit = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.live;
+    const isWebView2 = window.chrome && window.chrome.webview;
+    function doSendMessage(message) {
+      if (isWebKit) window.webkit.messageHandlers.live.postMessage(message);
+      else if (isWebView2) window.chrome.webview.postMessage(message);
+    }
+    let closed = false;
+    function closeWithResult(result) {
+      if (closed) return;
+      closed = true;
+      doSendMessage({ method: "close_and_send", params: [JSON.stringify(result)] });
+    }
+
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const promptEl = document.getElementById("prompt");
+    const durationEl = document.getElementById("duration");
+    const readoutEl = document.getElementById("duration-value");
+    const hairEl = document.getElementById("hair");
+    const generateBtn = document.getElementById("generate");
+    const cancelX = document.getElementById("cancel-x");
+
+    const DMIN = 0.5, DMAX = 30;
+    function durK() { return (parseFloat(durationEl.value) - DMIN) / (DMAX - DMIN); }
+    function redraw() { if (reduceMotion && hasCtx) drawScene(); }
+    function syncDuration() {
+      const v = parseFloat(durationEl.value);
+      readoutEl.innerHTML = v.toFixed(1) + "<small>s</small>";
+      redraw();
+    }
+    function syncEnabled() { generateBtn.disabled = promptEl.value.trim().length === 0; }
+
+    /* ---- Canvas stage ---- */
+    const cv = document.getElementById("stage");
+    const ctx = cv.getContext("2d");
+    const hasCtx = !!ctx;
+    let W = 0, H = 0, DPR = 1, CX = 0, CY = 0, SCALE = 1, RING = 1;
+    const TM = 56, BM = 60; // top/bottom margins so the dial never clips
+    function resize() {
+      if (!hasCtx) return;
+      DPR = Math.min(window.devicePixelRatio || 1, 2);
+      const r = cv.getBoundingClientRect();
+      W = r.width; H = r.height;
+      CY = (TM + (H - BM)) / 2;
+      RING = Math.min((H - BM - TM) / 2, W / 2 - 36);
+      CX = W / 2; SCALE = RING * 0.60;
+      cv.width = Math.max(1, W * DPR); cv.height = Math.max(1, H * DPR);
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    }
+
+    // point cloud: uniform sphere
+    const N = 820, P = [];
+    for (let i = 0; i < N; i++) {
+      const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2, rr = Math.sqrt(1 - u * u);
+      P.push({
+        x: rr * Math.cos(th), y: u, z: rr * Math.sin(th),
+        h: Math.random() < 0.78 ? 30 + Math.random() * 24 : 192 + Math.random() * 24,
+        n: 0.6 + Math.random() * 0.6,
+      });
+    }
+
+    // transient "fed" points emitted by typing
+    const FED = [];
+    let emitQ = 0;
+    function feed() {
+      FED.push({
+        x: (Math.random() * 0.7 + 0.15) * W, y: TM * 0.6,
+        tx: CX + (Math.random() - 0.5) * 60, ty: CY + (Math.random() - 0.5) * 60,
+        t: 0, h: 34 + Math.random() * 16,
+      });
+    }
+
+    // gauge geometry: gap at the bottom, arc over the top
+    const A0 = Math.PI * 0.75, SPAN = Math.PI * 1.5;
+    let t = 0, surgeAmt = 0, surging = false;
+
+    // soft radial clamp: identity near the center, smoothly asymptotes to
+    // maxR so a stretched/wobbling/surging cloud can never cross the ring.
+    function clampR(d, maxR) {
+      const a = maxR * 0.65;            // knee: leave the inner body untouched
+      if (d <= a) return d;
+      return a + (maxR - a) * (1 - Math.exp(-(d - a) / (maxR - a)));
+    }
+
+    function drawCloud() {
+      const k = durK();
+      const yStretch = 0.78 + k * 1.30;
+      const dense = 1 + k * 0.55;
+      const conv = 1 - surgeAmt * 0.55;
+      const cy = Math.cos(t), sy = Math.sin(t), cx = Math.cos(t * 0.4), sx = Math.sin(t * 0.4);
+      const maxR = RING * 0.9;          // keep particle bodies inside the ring
+      const pts = [];
+      for (const p of P) {
+        const wob = (1 + 0.16 * Math.sin(t * 1.5 + p.x * 3 + p.y * 2)) * conv;
+        const x = p.x * wob, y = p.y * wob * yStretch, z = p.z * wob;
+        const x1 = x * cy - z * sy, z1 = x * sy + z * cy;
+        const y1 = y * cx - z1 * sx, z2 = y * sx + z1 * cx;
+        const f = 1.8 / (2.4 + z2);
+        let dx = x1 * SCALE * f, dy = y1 * SCALE * f;
+        const d = Math.hypot(dx, dy);
+        if (d > 1e-3) { const cd = clampR(d, maxR); dx *= cd / d; dy *= cd / d; }
+        pts.push({ sx: CX + dx, sy: CY + dy, f, h: p.h, n: p.n, z: z2 });
+      }
+      pts.sort((a, b) => a.z - b.z);
+      for (const q of pts) {
+        const a = Math.max(0, Math.min(1, q.f * 0.9)) * q.n * (1 + surgeAmt * 0.8);
+        ctx.fillStyle = `hsla(${q.h},95%,${62 + surgeAmt * 15}%,${0.5 * a * dense})`;
+        ctx.beginPath(); ctx.arc(q.sx, q.sy, Math.max(0.4, q.f * (1.6 + surgeAmt * 1.2) * Math.sqrt(dense)), 0, 7); ctx.fill();
+      }
+      // fed points stream in
+      for (let i = FED.length - 1; i >= 0; i--) {
+        const fp = FED[i]; fp.t += 0.02;
+        fp.x += (fp.tx - fp.x) * 0.05; fp.y += (fp.ty - fp.y) * 0.05;
+        ctx.fillStyle = `hsla(${fp.h},100%,70%,${Math.max(0, 1 - fp.t)})`;
+        ctx.beginPath(); ctx.arc(fp.x, fp.y, 1.6, 0, 7); ctx.fill();
+        if (fp.t >= 1) FED.splice(i, 1);
+      }
+    }
+
+    function drawDial() {
+      const k = durK();
+      const a = A0 + SPAN * k;
+      ctx.lineWidth = 2; ctx.strokeStyle = "rgba(255,255,255,0.07)";
+      ctx.beginPath(); ctx.arc(CX, CY, RING, A0, A0 + SPAN); ctx.stroke();
+      const steps = 70;
+      for (let i = 0; i <= steps; i++) {
+        const f = i / steps; if (f > k) break;
+        const ang = A0 + SPAN * f;
+        const jitter = reduceMotion ? 0 : Math.sin(t * 4 + i * 0.6) * 1.2;
+        const rr = RING + jitter, px = CX + Math.cos(ang) * rr, py = CY + Math.sin(ang) * rr;
+        const head = f / Math.max(0.001, k);
+        ctx.fillStyle = `hsla(36,100%,${58 + head * 20}%,${0.10 + 0.7 * head * head})`;
+        ctx.beginPath(); ctx.arc(px, py, 1.0 + head * 1.8, 0, 7); ctx.fill();
+      }
+      const hx = CX + Math.cos(a) * RING, hy = CY + Math.sin(a) * RING;
+      ctx.fillStyle = "#fff"; ctx.shadowBlur = 16; ctx.shadowColor = "#ffce7a";
+      ctx.beginPath(); ctx.arc(hx, hy, 5, 0, 7); ctx.fill(); ctx.shadowBlur = 0;
+    }
+
+    function drawScene() {
+      if (!hasCtx) return;
+      if (reduceMotion) { ctx.fillStyle = "#04050a"; ctx.fillRect(0, 0, W, H); }
+      else { ctx.fillStyle = "rgba(4,5,10,0.32)"; ctx.fillRect(0, 0, W, H); }
+      ctx.globalCompositeOperation = "lighter";
+      drawCloud();
+      drawDial();
+      ctx.globalCompositeOperation = "source-over";
+    }
+
+    function loop() {
+      t += 0.005;
+      if (emitQ > 0 && FED.length < 120) { feed(); emitQ--; }
+      if (surgeAmt > 0 && !surging) surgeAmt = Math.max(0, surgeAmt - 0.03);
+      if (!surging) drawScene(); // during a surge, surge() owns drawing
+      requestAnimationFrame(loop);
+    }
+
+    /* ---- duration drag on the dial ---- */
+    function setDurationFromValue(v) {
+      durationEl.value = Math.max(DMIN, Math.min(DMAX, v)).toFixed(1);
+      syncDuration();
+    }
+    function pos(e) {
+      const r = cv.getBoundingClientRect();
+      const tp = e.touches ? e.touches[0] : e;
+      return { x: tp.clientX - r.left, y: tp.clientY - r.top };
+    }
+    let dragging = false;
+    function dialUpdate(p) {
+      const a = Math.atan2(p.y - CY, p.x - CX);
+      let rel = a - A0;
+      while (rel < 0) rel += Math.PI * 2;
+      while (rel >= Math.PI * 2) rel -= Math.PI * 2;
+      if (rel > SPAN) rel = (rel - SPAN) < (Math.PI * 2 - rel) ? SPAN : 0; // snap across bottom gap
+      setDurationFromValue(DMIN + (DMAX - DMIN) * (rel / SPAN));
+    }
+
+    /* ---- generate / cancel ---- */
+    function cancel() { closeWithResult({ prompt: null, duration: 0 }); }
+
+    function surge(done) {
+      surging = true;
+      const start = performance.now();
+      const step = (now) => {
+        const k = Math.min(1, (now - start) / 650);
+        surgeAmt = Math.sin(k * Math.PI / 2);
+        drawScene();
+        if (k < 1) requestAnimationFrame(step);
+        else { surging = false; done(); }
+      };
+      requestAnimationFrame(step);
+    }
+    function generate() {
+      if (generateBtn.disabled || surging) return;
+      const prompt = promptEl.value.trim();
+      const duration = parseFloat(durationEl.value);
+      const finish = () => closeWithResult({ prompt: prompt || null, duration });
+      if (reduceMotion || !hasCtx) { finish(); return; }
+      surge(finish);
+    }
+
+    /* ---- wire up ---- */
+    window.addEventListener("resize", resize);
+    durationEl.addEventListener("input", syncDuration);
+    promptEl.addEventListener("input", () => {
+      syncEnabled();
+      hairEl.style.width = Math.min(100, promptEl.value.trim().length * 2.4) + "%";
+      if (!reduceMotion) emitQ += 2;
+    });
+    generateBtn.addEventListener("click", generate);
+    cancelX.addEventListener("click", cancel);
+    cv.addEventListener("pointerdown", (e) => { dragging = true; dialUpdate(pos(e)); });
+    window.addEventListener("pointermove", (e) => { if (dragging) dialUpdate(pos(e)); });
+    window.addEventListener("pointerup", () => { dragging = false; });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") generate();
+      else if (e.key === "Escape") cancel();
+      else if (e.target !== promptEl && (e.key === "ArrowUp" || e.key === "ArrowRight")) {
+        setDurationFromValue(parseFloat(durationEl.value) + 0.5); e.preventDefault();
+      } else if (e.target !== promptEl && (e.key === "ArrowDown" || e.key === "ArrowLeft")) {
+        setDurationFromValue(parseFloat(durationEl.value) - 0.5); e.preventDefault();
+      }
+    });
+
+    document.addEventListener("DOMContentLoaded", () => {
+      resize(); syncDuration(); syncEnabled(); promptEl.focus();
+      if (reduceMotion) drawScene();
+      else requestAnimationFrame(loop);
+    });
+  </script>
+</body>
+
+</html>
